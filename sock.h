@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <arpa/inet.h>
 #include <pthread.h>
-
+#include <limits.h>
 // CONSTANTS
 #define true 1
 #define false 0 
@@ -26,21 +26,27 @@ typedef struct addr{
 } addr;
 
 typedef struct packet{
-    uint16_t seq_num;
-    char data[14];
+    uint32_t seq_num;
+    uint16_t type;
+    // 0 for acl 1 for data made 2 bytes so that packet struct is 16 bytes 
+    char data[10];
 } packet;
 
 typedef struct sender_que{
     packet que[QUE_SIZE];
+    char isACKed[QUE_SIZE];
     int base;
     int end;
-    // end - base + 1 must be equal to WINDOW_SIZE 
+    int last; // pointer to last added packet
+    // end - base + 1 must be smaller than to WINDOW_SIZE 
 }sender_que; 
 
 // FUNCTION DECLS
 int create_socket(int port_number);
-
-
+void form_and_que_packets(sender_que *q, char * inp, int size, uint32_t *seq_num);
+int get_input_len(char * inp_buf);
+void print_sender_q(sender_que * q);
+char isWindowFull(int base, int end);
 #endif
 
 

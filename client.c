@@ -14,7 +14,8 @@ void* get_input_thread(void*);
 // GLOBALS
 int sd;
 struct sockaddr_in s_addr;
-char sender_buf[SENDER_BUF_SIZE];
+char *input_buf;
+sender_que sender_buf;
 
 // CONDS AND MUTEXES
 pthread_cond_t send_wait = PTHREAD_COND_INITIALIZER;
@@ -41,11 +42,14 @@ int main(int argc, char** argv)
     s_addr.sin_family = AF_INET;
     s_addr.sin_port = htons(SERVER_PORT);
     s_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
-    
+
     pthread_create(&send_thread, NULL, send_data_thread, NULL);
 
     pthread_create(&receive_thread, NULL, receive_data_thread, NULL);
-
+    
+    sender_buf.base = 0;
+    sender_buf.end = 0;
+    sender_buf.last = -1;
     pthread_create(&get_input_t, NULL, get_input_thread, NULL);
 
 
@@ -65,24 +69,30 @@ void* send_data_thread(void* args)
         // sender waits to be signalled to send packet
         pthread_mutex_lock(&send_mutex);
         pthread_cond_wait(&send_wait, &send_mutex);
-        // sender waits on timed condition
+        // sender waits on condition
         //     condition variable can be signalled in 2 ways
-        //     1: timer finishes
+        //     1: timer thread's alarm wents off 
         //          send all packets in current window again
-        //          restart timer
-        //     2: input comes 
-        //          packetize the input 
-        //          and add them to the que
-        //     3: waken up to restart the timer
-        //          correct ack received from receiver thread
-        //          increment base pointer
-        if(sendto(sd, sender_buf, 100, 0, (struct sockaddr *)&s_addr,
-                    sizeof(s_addr)) == -1)
+        //          restart timer threads alarm
+        //     2: input thread sends signal 
+        //          send untill base window size is reached
+        //for(; !isWindowFull(sender_buf.base, sender_buf.end); )
+        for(int i = sender_buf.base; i < sender_buf.end + 1; i++)
         {
-            perror("sendto");
-            exit(1);
+            if(sendto(  sd, 
+                        (void*)&sender_buf.que[i], 
+                        PAYLOAD_SIZE, 
+                        0, 
+                        (struct sockaddr *)&s_addr,
+                        sizeof(s_addr)) == -1
+                    ) 
+            {
+                perror("sendto");
+                exit(1);
+            }
+
+
         }
-        memset(sender_buf, 0, SENDER_BUF_SIZE);
         pthread_mutex_unlock(&send_mutex);
     }
     return NULL;
@@ -93,17 +103,17 @@ void* receive_data_thread(void* args)
     socklen_t addr_len;
     while(true)
     {
-        char buf[100]; memset(buf,0,100);
+        char input_buf[1024]; memset(input_buf,0,1024);
         if(recvfrom(sd,
-                    buf,
-                    100,
+                    input_buf,
+                    1024,
                     0,
                     (struct sockaddr *)&s_addr, &addr_len) == -1)
         {
             perror("recvfrom");
             exit(1);
         }
-        fprintf(stderr,"client got: %s", buf);
+        fprintf(stdout,"%s", input_buf);
 
     }
 
@@ -111,11 +121,22 @@ void* receive_data_thread(void* args)
 }
 void * get_input_thread(void * args)
 {
-   while(true)
-   {
-        fgets(sender_buf, SENDER_BUF_SIZE, stdin);
+    input_buf = malloc(1024 * sizeof(char));
+    memset(input_buf, 0, 1024);
+    uint32_t seq_num = 0;
+    while(true)
+    {
+        fgets(input_buf, 1024, stdin);
+        form_and_que_packets(
+                &sender_buf, 
+                input_buf, 
+                get_input_len(input_buf),
+                &seq_num
+                    );
+        print_sender_q(&sender_buf);
         // signals the sender thread 
-        pthread_cond_signal(&send_wait);  
-   }
+        //if(sender_buf.end - sender_buf.base + 1 != WINDOW_SIZE)
+            pthread_cond_signal(&send_wait);  
+    }
 
 }

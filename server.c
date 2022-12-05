@@ -63,17 +63,18 @@ void* receive_data_thread(void* args)
     socklen_t addr_len = sizeof c_addr;
     while(true)
     {
-        char buf[100]; memset(buf, 0, 100);
+        packet p; memset((void*)&p, 0, PAYLOAD_SIZE);
         if(recvfrom(sd, 
-                    buf, 
-                    100, 
+                    (void*)&p, 
+                    PAYLOAD_SIZE, 
                     0, 
                     (struct sockaddr *) &c_addr, &addr_len) == -1)
         {
             perror("recvfrom");
             exit(1);
         }
-        fprintf(stderr, "server got : %s", buf);
+        fprintf(stdout, "%s", p.data);
+        // this was stderr, but stderr prints immediately
     }
 
     return NULL;
