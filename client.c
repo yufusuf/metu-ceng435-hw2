@@ -2,13 +2,8 @@
 
 #include "sock.h"
 
-
 // while i was implementing i was influenced by the psuedocode given in this link:
 // https://www.tutorialspoint.com/a-protocol-using-go-back-n
-
-
-// send data to this ip
-// SERVER_IP "172.24.0.10"
 
 // FUNCTION DEFNS
 void* send_data_thread(void*);
@@ -33,15 +28,6 @@ char WAKE_STATUS;
 pthread_cond_t send_wait = PTHREAD_COND_INITIALIZER;
 pthread_cond_t alarm = PTHREAD_COND_INITIALIZER;
 pthread_mutex_t send_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static struct timeval g_start_time;
-static long get_timestamp(void)
-{
-    struct timeval cur_time;
-    gettimeofday(&cur_time, NULL);
-    return (cur_time.tv_sec - g_start_time.tv_sec) * 1000000 
-           + (cur_time.tv_usec - g_start_time.tv_usec);
-}
 
 int main(int argc, char** argv)
 {   
@@ -87,14 +73,14 @@ int main(int argc, char** argv)
 }
 void * timer_thread(void*args)
 {
-    gettimeofday(&g_start_time, NULL);
+    
     pthread_mutex_lock(&send_mutex);
     pthread_cond_wait(&send_wait, &send_mutex);
     pthread_mutex_unlock(&send_mutex);
     while(true)
     {
         pthread_mutex_lock(&send_mutex);
-        struct timespec alarm_ms = alarm_time(500);
+        struct timespec alarm_ms = alarm_time(100);
         int reason = pthread_cond_timedwait(&alarm, &send_mutex, &alarm_ms);
         if(reason == ETIMEDOUT)
         {
@@ -123,7 +109,6 @@ void* send_data_thread(void* args)
         // sender waits to be signalled to send packet
         pthread_mutex_lock(&send_mutex);
         pthread_cond_wait(&send_wait, &send_mutex);
-        fprintf(stderr, "WAKE SEND\n");
         // sender waits on condition
         //     condition variable can be signalled in 2 ways
         //     1: timer thread's alarm wents off 
@@ -187,6 +172,7 @@ void* receive_data_thread(void* args)
 {
     // fprintf(stderr, "receive thread online\n");
     socklen_t addr_len;
+    uint32_t expected_seqnum  = 0;
     packet *p = malloc(sizeof(packet)); 
     while(true)
     {
@@ -200,7 +186,6 @@ void* receive_data_thread(void* args)
             perror("recvfrom");
             exit(1);
         }
-        fprintf(stderr, "WAKE RECV\n");
         // resolve package check ack if its in order
         if(p->type == TYPE_ACK)
         {
@@ -244,7 +229,31 @@ void* receive_data_thread(void* args)
             // check if expected sequence number == p.seq_num
             // send ack with p.seq_num 
             // else resend ack for expected seq num
-            continue; // client only receives ack packacages for now  
+            if(p->seq_num == expected_seqnum)
+            {
+                // since printf buffers data untill it sees a '\n' 
+                // i can accumulate data in its buffer
+                // this sort of corresponds to "delivering data to upper layer"
+                fprintf(stdout, "%s", p->data);
+
+                // prepare ack packet
+                packet ack_p;
+                memset(&ack_p, 0, sizeof(packet));
+                ack_p.type = TYPE_ACK;
+                ack_p.seq_num = expected_seqnum;
+                fprintf(stderr, "sending ack %u to pack %s\n", ack_p.seq_num, p->data);
+
+                // send ack with expected_seqnum
+                if(sendto(  sd, 
+                            (void*)&ack_p, 
+                            PAYLOAD_SIZE, 
+                            0,
+                            (struct sockaddr *) &s_addr,
+                            sizeof(s_addr)) == -1)
+                {perror("sendto"); exit(1);}
+                expected_seqnum++; 
+            }
+
         }
         //fprintf(stdout,"%s", input_buf);
 
@@ -272,10 +281,12 @@ void * get_input_thread(void * args)
                     );
         pthread_mutex_unlock(&send_mutex);
 
-        fprintf(stderr, "input_len: %d input_echo %s", input_len, input_buf);
-        print_sender_q(&sender_buf);
-        fprintf(stderr, "base %d, end %d, last %d\n",
-               sender_buf.base, sender_buf.end, sender_buf.last);
+        //fprintf(stderr, "input_len: %d input_echo %s", input_len, input_buf);
+        //print_sender_q(&sender_buf);
+        //fprintf(stderr, "base %d, end %d, last %d\n",
+        // sender_buf.base, sender_buf.end, sender_buf.last);
+        
+
         // signals the sender thread 
         // if(sender_buf.end - sender_buf.base + 1 != WINDOW_SIZE)
 
