@@ -3,6 +3,10 @@
 #include "sock.h"
 
 
+// while i was implementing i was influenced by the psuedocode given in this link:
+// https://www.tutorialspoint.com/a-protocol-using-go-back-n
+
+
 // send data to this ip
 // SERVER_IP "172.24.0.10"
 
@@ -10,6 +14,7 @@
 void* send_data_thread(void*);
 void* receive_data_thread(void*);
 void* get_input_thread(void*);
+void* timer_thread(void*);
 
 // GLOBALS
 int sd;
@@ -26,7 +31,17 @@ char WAKE_STATUS;
 
 // CONDS AND MUTEXES
 pthread_cond_t send_wait = PTHREAD_COND_INITIALIZER;
+pthread_cond_t alarm = PTHREAD_COND_INITIALIZER;
 pthread_mutex_t send_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static struct timeval g_start_time;
+static long get_timestamp(void)
+{
+    struct timeval cur_time;
+    gettimeofday(&cur_time, NULL);
+    return (cur_time.tv_sec - g_start_time.tv_sec) * 1000000 
+           + (cur_time.tv_usec - g_start_time.tv_usec);
+}
 
 int main(int argc, char** argv)
 {   
@@ -45,7 +60,7 @@ int main(int argc, char** argv)
     pthread_t send_thread;
     pthread_t receive_thread;
     pthread_t get_input_t;
-
+    pthread_t timer_t;
     // client sends to server ip and address
 
     s_addr.sin_family = AF_INET;
@@ -61,14 +76,44 @@ int main(int argc, char** argv)
     sender_buf.last = -1;
     pthread_create(&get_input_t, NULL, get_input_thread, NULL);
 
+    pthread_create(&timer_t, NULL, timer_thread, NULL);
 
     pthread_join(send_thread, NULL);
     pthread_join(receive_thread, NULL);
     pthread_join(get_input_t, NULL);
-
+    pthread_join(timer_t, NULL);
+    
     return 0;
 }
+void * timer_thread(void*args)
+{
+    gettimeofday(&g_start_time, NULL);
+    pthread_mutex_lock(&send_mutex);
+    pthread_cond_wait(&send_wait, &send_mutex);
+    pthread_mutex_unlock(&send_mutex);
+    while(true)
+    {
+        pthread_mutex_lock(&send_mutex);
+        struct timespec alarm_ms = alarm_time(500);
+        int reason = pthread_cond_timedwait(&alarm, &send_mutex, &alarm_ms);
+        if(reason == ETIMEDOUT)
+        {
+            fprintf(stderr, "alarm went off \n");
+            // fprintf(stderr, "t: %9ld\n ", get_timestamp()); 
 
+            //signal the sender thread to send messages in window again
+            WAKE_STATUS = TIMEOUT;
+            pthread_cond_signal(&send_wait);
+        }
+        else if(reason == 0)
+        {
+            // this will happen only if timer is restarted via signaling
+            // no need to do anything timer will restart itself
+            fprintf(stderr, "alarm restart \n");
+        }
+        pthread_mutex_unlock(&send_mutex);
+    }
+}
 void* send_data_thread(void* args)
 {
     // fprintf(stderr, "send thread online\n");
@@ -78,6 +123,7 @@ void* send_data_thread(void* args)
         // sender waits to be signalled to send packet
         pthread_mutex_lock(&send_mutex);
         pthread_cond_wait(&send_wait, &send_mutex);
+        fprintf(stderr, "WAKE SEND\n");
         // sender waits on condition
         //     condition variable can be signalled in 2 ways
         //     1: timer thread's alarm wents off 
@@ -85,30 +131,54 @@ void* send_data_thread(void* args)
         //          restart timer threads alarm
         //     2: input thread sends signal 
         //          send untill base window size is reached
-        switch (WAKE_STATUS){
-            case SEND_PACKET:
-                for(; !isWindowFull(sender_buf.base, sender_buf.end)
-                        && sender_buf.end != sender_buf.last + 1
-                        ; INCR(sender_buf.end))
-                {
-                    //TODO MAKE A WRAPPER FOR THESE FUNCTIONS
-                    fprintf(stderr, "end:%d, %u sending %s \n", sender_buf.end,
-                            sender_buf.que[sender_buf.end].seq_num,
-                            sender_buf.que[sender_buf.end].data
-                            );
+        if(WAKE_STATUS == SEND_PACKET)
+        {
+            // send the packets only if they are ready to send
+            for(; !isWindowFull(sender_buf.base, sender_buf.end)
+                    && sender_buf.end != sender_buf.last + 1
+                    ; INCR(sender_buf.end))
+            {
+                pthread_cond_signal(&alarm);
+                fprintf(stderr, "end:%d, %u sending %s \n", sender_buf.end,
 
-                    if(sendto(  sd, 
-                                (void*)&(sender_buf.que[sender_buf.end]), 
-                                PAYLOAD_SIZE, 
-                                0, 
-                                (struct sockaddr *)&s_addr,
-                                sizeof(s_addr)) == -1
-                            ) { perror("sendto"); exit(1);}
-                }
-                break;
-            case TIMEOUT:
-                break;
+                        sender_buf.que[sender_buf.end].seq_num,
+                        sender_buf.que[sender_buf.end].data
+                        );
+
+                if(sendto(  sd, 
+                            (void*)&(sender_buf.que[sender_buf.end]), 
+                            PAYLOAD_SIZE, 
+                            0, 
+                            (struct sockaddr *)&s_addr,
+                            sizeof(s_addr)) == -1
+                        ) { perror("sendto"); exit(1);}
+            }
         }
+        else if(WAKE_STATUS == TIMEOUT)
+        {
+            // send all the packets again
+            // restarts timer
+            pthread_cond_signal(&alarm);
+            for(int i = sender_buf.base; 
+                    i < sender_buf.end && i <= sender_buf.last ; i++)
+            {
+                
+                fprintf(stderr, "end:%d, %u sending %s \n", sender_buf.end,
+
+                        sender_buf.que[i].seq_num,
+                        sender_buf.que[i].data
+                        );
+                if(sendto(  sd, 
+                            (void*)&(sender_buf.que[i]), 
+                            PAYLOAD_SIZE, 
+                            0, 
+                            (struct sockaddr *)&s_addr,
+                            sizeof(s_addr)) == -1
+                        ) { perror("sendto"); exit(1);}
+            }
+        }
+        else
+        { fprintf(stderr, "something went wrong\n");}
         pthread_mutex_unlock(&send_mutex);
     }
     return NULL;
@@ -130,6 +200,7 @@ void* receive_data_thread(void* args)
             perror("recvfrom");
             exit(1);
         }
+        fprintf(stderr, "WAKE RECV\n");
         // resolve package check ack if its in order
         if(p->type == TYPE_ACK)
         {
@@ -148,6 +219,7 @@ void* receive_data_thread(void* args)
             )
             {
                     // slide window up to received packets seq num
+                    //TODO maybe use flag here to check if window is slided
                     while(sender_buf.que[sender_buf.base].seq_num <= p->seq_num
                             && sender_buf.base != sender_buf.end)
                     {
@@ -155,7 +227,7 @@ void* receive_data_thread(void* args)
                                 sender_buf.que[sender_buf.base].seq_num);
                         // delete acked packet
                          
-                        //memset(&sender_buf.que[sender_buf.base], 0, sizeof(packet));
+                        memset(&sender_buf.que[sender_buf.base], 0, sizeof(packet));
                         INCR(sender_buf.base);
                     }
 
@@ -205,9 +277,14 @@ void * get_input_thread(void * args)
         fprintf(stderr, "base %d, end %d, last %d\n",
                sender_buf.base, sender_buf.end, sender_buf.last);
         // signals the sender thread 
-        //if(sender_buf.end - sender_buf.base + 1 != WINDOW_SIZE)
+        // if(sender_buf.end - sender_buf.base + 1 != WINDOW_SIZE)
+
+        // initially send and timer threads are doing nothing so we wake them up by
+        // signalling broadcast
+        // since after initial input timer thread never waits on send_cond
+        // broadcasting only effects send thread
         WAKE_STATUS  = SEND_PACKET;
-        pthread_cond_signal(&send_wait);  
+        pthread_cond_broadcast(&send_wait);  
     }
 
 }

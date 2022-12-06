@@ -71,7 +71,17 @@ void form_and_que_packets(sender_que *q, char * inp, int size, uint32_t *seq)
 
     }
 }
-
+struct timespec alarm_time(int t)
+{
+    struct timespec ts;
+    struct timeval tp;
+    gettimeofday(&tp, NULL);
+    ts.tv_sec = tp.tv_sec + t / 1000;
+    ts.tv_nsec = tp.tv_usec * 1000 + 1000000*(t % 1000);
+    ts.tv_sec += ts.tv_nsec / (1000000000);
+    ts.tv_nsec %= (1000000000);
+	  return ts;	
+}
 void print_sender_q(sender_que * q)
 {
     for(int i = q->base; i <= q->last; i++)
@@ -81,3 +91,4 @@ void print_sender_q(sender_que * q)
                 p->seq_num, p->data);
     }
 }
+

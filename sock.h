@@ -10,6 +10,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <limits.h>
+#include <sys/time.h>
 // CONSTANTS
 #define true 1
 #define false 0 
@@ -61,6 +62,7 @@ void form_and_que_packets(sender_que *q, char * inp, int size, uint32_t *seq_num
 int get_input_len(char * inp_buf);
 void print_sender_q(sender_que * q);
 char isWindowFull(int base, int end);
+struct timespec alarm_time(int t);
 #endif
 
 
