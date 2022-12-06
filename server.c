@@ -213,6 +213,10 @@ void* receive_data_thread(void* args)
             // check if expected sequence number == p.seq_num
             // send ack with p.seq_num 
             // else resend ack for expected seq num
+            if(p->seq_num == UINT_MAX)
+            {
+                exit(1);
+            }
             if(p->seq_num == expected_seqnum)
             {
                 // since printf buffers data untill it sees a '\n' 
@@ -247,6 +251,7 @@ void * get_input_thread(void * args)
 {
     input_buf = malloc(1024 * sizeof(char));
     memset(input_buf, 0, 1024);
+    int new_line_count = 0;
     uint32_t seq_num = 0;
     while(true)
     {
@@ -254,6 +259,29 @@ void * get_input_thread(void * args)
         fgets(input_buf, 1024, stdin);
         int input_len = get_input_len(input_buf);
 
+        if(input_len == 1)
+        {
+            new_line_count++;
+            if(new_line_count == 3)
+            {
+
+                packet p;
+                memset(&p, 0, sizeof(packet));
+                p.type = TYPE_DATA;
+                p.seq_num = UINT_MAX;
+
+                // send ack with expected_seqnum
+                if(sendto(  sd, 
+                            (void*)&p, 
+                            PAYLOAD_SIZE, 
+                            0,
+                            (struct sockaddr *) &c_addr,
+                            sizeof(c_addr)) == -1)
+                {perror("sendto"); exit(1);}
+                exit(1);
+            }
+        }
+        else new_line_count = 0;
         pthread_mutex_lock(&send_mutex);
         form_and_que_packets(
                 &sender_buf, 
