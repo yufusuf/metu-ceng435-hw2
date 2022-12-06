@@ -59,8 +59,10 @@ void* send_data_thread(void* args)
 }
 void* receive_data_thread(void* args)
 {
-    // fprintf(stderr, "receive thread online\n");
     socklen_t addr_len = sizeof c_addr;
+
+    uint32_t expected_seqnum  = 0;
+
     while(true)
     {
         packet p; memset((void*)&p, 0, PAYLOAD_SIZE);
@@ -73,8 +75,45 @@ void* receive_data_thread(void* args)
             perror("recvfrom");
             exit(1);
         }
-        fprintf(stdout, "%s", p.data);
-        // this was stderr, but stderr prints immediately
+        // resolve package check ack if its in order
+        if(p.type == TYPE_ACK)
+        {
+            // ACK PACKET RECEIVED
+            fprintf(stderr, "burasi calismamali\n");
+            continue; // server only receives data packacages for now  
+        }
+        else
+        {
+            // DATA PACKET RECEIVED
+            // check if expected sequence number == p.seq_num
+            // send ack with p.seq_num 
+            // else resend ack for expected seq num
+            if(p.seq_num == expected_seqnum)
+            {
+                // since printf buffers data untill it sees a '\n' 
+                // i can accumulate data in its buffer
+                // this sort of corresponds to "delivering data to upper layer"
+                fprintf(stdout, "%s", p.data);
+
+                // prepare ack packet
+                packet ack_p;
+                memset(&ack_p, 0, sizeof(packet));
+                ack_p.type = TYPE_ACK;
+                ack_p.seq_num = expected_seqnum;
+                fprintf(stderr, "sending ack %u to pack %s\n", ack_p.seq_num, p.data);
+
+                // send ack with expected_seqnum
+                if(sendto(  sd, 
+                            (void*)&ack_p, 
+                            PAYLOAD_SIZE, 
+                            0,
+                            (struct sockaddr *) &c_addr,
+                            sizeof(c_addr)) == -1)
+                {perror("sendto"); exit(1);}
+                expected_seqnum++; 
+            }
+
+        }
     }
 
     return NULL;

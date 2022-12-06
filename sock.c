@@ -30,35 +30,39 @@ int get_input_len(char * p)
 char isWindowFull(int base, int end)
 {
     int count = 1;
-    for(int i = base; i !=  end; i = (i+1) % QUE_SIZE)
+    for(int i = base; i !=  end; INCR(i))
         count++;
-    return count == WINDOW_SIZE;
+
+    return count == WINDOW_SIZE + 1;
 }
 void form_and_que_packets(sender_que *q, char * inp, int size, uint32_t *seq)
 {
-    const int DATA_SIZE = 10;
     int i;
     int j;
     int k;
-    for(i = 0; i < size/DATA_SIZE + 1; i++)
+    int packet_count = size % DATA_SIZE == 0 ? size/DATA_SIZE : size/DATA_SIZE + 1;
+
+    for(i = 0; i < packet_count; i++)
     {
         k = 0;
-        q->last = (q->last + 1) % QUE_SIZE;
-        q->isACKed[q->last] = 0;
-        q->end = q->last;
+        INCR(q->last);
         packet * cur_packet = &(q->que[q->last]);
 
-        //if(q->last == q->base) {
+        //if(q->last == q->base && q->base != 0) {
         //    fprintf(stderr, "q->last == q->base, might be sender buffer overflow\n");
         //}
 
 
-        for(j = i*DATA_SIZE; j < i*DATA_SIZE + 10; j++) {
-            cur_packet->data[k++] = inp[j]; 
+        for(j = i*DATA_SIZE; j < (i + 1)*DATA_SIZE; j++) {
+            cur_packet->data[k] = inp[j]; 
+            k++;
+            
         }
 
         // q->que[q->last].checksum = checksum();
-        q->que[q->last].seq_num = (*seq)++;
+        q->que[q->last].seq_num = (*seq);
+        *seq = *seq + 1;
+        q->que[q->last].type = TYPE_DATA;
         if(*seq == UINT_MAX) {
            fprintf(stderr, "seq_num limit reached\n"); 
 
@@ -70,7 +74,7 @@ void form_and_que_packets(sender_que *q, char * inp, int size, uint32_t *seq)
 
 void print_sender_q(sender_que * q)
 {
-    for(int i = 0; i < 10; i++)
+    for(int i = q->base; i <= q->last; i++)
     {
         packet *p = &(q->que[i]);
         fprintf(stderr,"seq_num %u, data: %s\n", 

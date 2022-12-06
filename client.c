@@ -17,12 +17,21 @@ struct sockaddr_in s_addr;
 char *input_buf;
 sender_que sender_buf;
 
+// before sender thread is signalled this variable is set
+// 0 -> packets to be sent
+// 1 -> timer went off
+#define SEND_PACKET 0
+#define TIMEOUT 1
+char WAKE_STATUS;
+
 // CONDS AND MUTEXES
 pthread_cond_t send_wait = PTHREAD_COND_INITIALIZER;
 pthread_mutex_t send_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int main(int argc, char** argv)
 {   
+    memset(&sender_buf, 0, sizeof(sender_buf));
+
     // client uses a random port 
     // in this case its defined in sock.h as 2002
     sd = create_socket(C_PORT);
@@ -76,22 +85,29 @@ void* send_data_thread(void* args)
         //          restart timer threads alarm
         //     2: input thread sends signal 
         //          send untill base window size is reached
-        //for(; !isWindowFull(sender_buf.base, sender_buf.end); )
-        for(int i = sender_buf.base; i < sender_buf.end + 1; i++)
-        {
-            if(sendto(  sd, 
-                        (void*)&sender_buf.que[i], 
-                        PAYLOAD_SIZE, 
-                        0, 
-                        (struct sockaddr *)&s_addr,
-                        sizeof(s_addr)) == -1
-                    ) 
-            {
-                perror("sendto");
-                exit(1);
-            }
+        switch (WAKE_STATUS){
+            case SEND_PACKET:
+                for(; !isWindowFull(sender_buf.base, sender_buf.end)
+                        && sender_buf.end != sender_buf.last + 1
+                        ; INCR(sender_buf.end))
+                {
+                    //TODO MAKE A WRAPPER FOR THESE FUNCTIONS
+                    fprintf(stderr, "end:%d, %u sending %s \n", sender_buf.end,
+                            sender_buf.que[sender_buf.end].seq_num,
+                            sender_buf.que[sender_buf.end].data
+                            );
 
-
+                    if(sendto(  sd, 
+                                (void*)&(sender_buf.que[sender_buf.end]), 
+                                PAYLOAD_SIZE, 
+                                0, 
+                                (struct sockaddr *)&s_addr,
+                                sizeof(s_addr)) == -1
+                            ) { perror("sendto"); exit(1);}
+                }
+                break;
+            case TIMEOUT:
+                break;
         }
         pthread_mutex_unlock(&send_mutex);
     }
@@ -101,19 +117,64 @@ void* receive_data_thread(void* args)
 {
     // fprintf(stderr, "receive thread online\n");
     socklen_t addr_len;
+    packet *p = malloc(sizeof(packet)); 
     while(true)
     {
-        char input_buf[1024]; memset(input_buf,0,1024);
+        memset(p, 0, PAYLOAD_SIZE);
         if(recvfrom(sd,
-                    input_buf,
-                    1024,
+                    p,
+                    PAYLOAD_SIZE,
                     0,
                     (struct sockaddr *)&s_addr, &addr_len) == -1)
         {
             perror("recvfrom");
             exit(1);
         }
-        fprintf(stdout,"%s", input_buf);
+        // resolve package check ack if its in order
+        if(p->type == TYPE_ACK)
+        {
+            // ACK PACKET RECEIVED
+            pthread_mutex_lock(&send_mutex); 
+            // dont know surely that  if locking is necessary
+            // better safe than sorry
+            fprintf(stderr, "base : %d, end: %d, base_seq %d, end_seq %d, p_seq %d\n",
+                 sender_buf.base, sender_buf.end, 
+                 sender_buf.que[sender_buf.base].seq_num,   
+                 sender_buf.que[sender_buf.end].seq_num,
+                 p->seq_num); 
+
+            if (p->seq_num >= sender_buf.que[sender_buf.base].seq_num && 
+                    p->seq_num <= sender_buf.que[sender_buf.end - 1].seq_num
+            )
+            {
+                    // slide window up to received packets seq num
+                    while(sender_buf.que[sender_buf.base].seq_num <= p->seq_num
+                            && sender_buf.base != sender_buf.end)
+                    {
+                        fprintf(stderr, "acked %u\n",  
+                                sender_buf.que[sender_buf.base].seq_num);
+                        // delete acked packet
+                         
+                        //memset(&sender_buf.que[sender_buf.base], 0, sizeof(packet));
+                        INCR(sender_buf.base);
+                    }
+
+
+                    //send a signal to timer thread to stop timer
+                    WAKE_STATUS = SEND_PACKET;
+                    pthread_cond_signal(&send_wait);
+            }
+            pthread_mutex_unlock(&send_mutex);
+        }
+        else
+        {
+            // DATA PACKET RECEIVED
+            // check if expected sequence number == p.seq_num
+            // send ack with p.seq_num 
+            // else resend ack for expected seq num
+            continue; // client only receives ack packacages for now  
+        }
+        //fprintf(stdout,"%s", input_buf);
 
     }
 
@@ -126,17 +187,27 @@ void * get_input_thread(void * args)
     uint32_t seq_num = 0;
     while(true)
     {
+        memset(input_buf, 0, 1024);
         fgets(input_buf, 1024, stdin);
+        int input_len = get_input_len(input_buf);
+
+        pthread_mutex_lock(&send_mutex);
         form_and_que_packets(
                 &sender_buf, 
                 input_buf, 
-                get_input_len(input_buf),
+                input_len,
                 &seq_num
                     );
+        pthread_mutex_unlock(&send_mutex);
+
+        fprintf(stderr, "input_len: %d input_echo %s", input_len, input_buf);
         print_sender_q(&sender_buf);
+        fprintf(stderr, "base %d, end %d, last %d\n",
+               sender_buf.base, sender_buf.end, sender_buf.last);
         // signals the sender thread 
         //if(sender_buf.end - sender_buf.base + 1 != WINDOW_SIZE)
-            pthread_cond_signal(&send_wait);  
+        WAKE_STATUS  = SEND_PACKET;
+        pthread_cond_signal(&send_wait);  
     }
 
 }
